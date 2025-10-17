@@ -345,7 +345,7 @@ class HealthMonitor:
                     return f.read().strip()
         except:
             pass
-        return "https://chat.nanda-registry.com:6900"
+        return "https://registry.chat39.com:6900"
 
     def get_health_history(self, check_name: str, hours: int = 24) -> List[HealthCheck]:
         """Get health check history"""

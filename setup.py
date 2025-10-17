@@ -10,14 +10,13 @@ import os
 def read_requirements():
     """Read requirements from file"""
     requirements = [
-        "flask",
-        "anthropic",
-        "requests",
-        "python-a2a==0.5.6",
-        "mcp",
-        "python-dotenv",
-        "flask-cors",
-        "psutil"  # For system monitoring
+        "anthropic>=0.18.0",
+        "a2a-sdk>=0.2.0",  # Official A2A SDK (replaced python-a2a)
+        "httpx>=0.27.0",  # For async HTTP (replaces requests)
+        "uvicorn>=0.30.0",  # ASGI server for A2A
+        "starlette>=0.37.0",  # For A2A server (included with a2a-sdk)
+        "python-dotenv>=1.0.0",
+        "psutil>=5.9.0",  # For system monitoring
     ]
     return requirements
 

@@ -1,145 +1,154 @@
-#!/usr/bin/env python3
 """
-Simple Agent Bridge for A2A Communication
+Agent Bridge for Protocol-Agnostic Communication
 
-Clean, simple bridge focused on agent-to-agent communication.
+Handles message routing between agents using any registered protocol.
 """
 
-import os
+import re
 import uuid
 import logging
-import requests
 from typing import Callable, Optional, Dict, Any
-from python_a2a import A2AServer, A2AClient, Message, TextContent, MessageRole, Metadata
+from ..protocols.router import ProtocolRouter
+from .registry_client import RegistryClient
 
-# Configure logger to capture conversation logs
 logger = logging.getLogger(__name__)
 
 
-class SimpleAgentBridge(A2AServer):
-    """Simple Agent Bridge for A2A communication only"""
+class AgentBridge:
+    """Protocol-agnostic agent message router and coordinator"""
     
     def __init__(self, 
-                 agent_id: str, 
+                 protocol_router: ProtocolRouter,
+                 registry_client: RegistryClient,
+                 agent_id: str,
                  agent_logic: Callable[[str, str], str],
-                 registry_url: Optional[str] = None,
-                 telemetry = None):
-        super().__init__()
+                 telemetry=None):
+        """Initialize agent bridge
+        
+        Args:
+            protocol_router: Router managing protocol adapters
+            registry_client: Client for NANDA Index
+            agent_id: This agent's unique identifier
+            agent_logic: Agent's business logic function(message: str, conversation_id: str) -> str
+            telemetry: Optional telemetry system
+        """
+        self.router = protocol_router
+        self.registry = registry_client
         self.agent_id = agent_id
         self.agent_logic = agent_logic
-        self.registry_url = registry_url
         self.telemetry = telemetry
         
-    def handle_message(self, msg: Message) -> Message:
-        """Handle incoming messages"""
-        conversation_id = msg.conversation_id or str(uuid.uuid4())
+        # Register this bridge as incoming handler for all protocols
+        for protocol_name in self.router.get_all_protocols():
+            protocol = self.router.get_protocol(protocol_name)
+            protocol.set_incoming_handler(self.handle_message)
         
-        # Only handle text content
-        if not isinstance(msg.content, TextContent):
-            return self._create_response(
-                msg, conversation_id, 
-                "Only text messages supported"
-            )
+        logger.info(f"🌉 Bridge initialized for {agent_id} with protocols: {self.router.get_all_protocols()}")
+    
+    def extract_agent_id(self, content: str) -> Optional[str]:
+        """Extract @agent-id from message content"""
+        match = re.search(r'@([\w-]+)', content)
+        return match.group(1) if match else None
+    
+    def parse_incoming_agent_message(self, text: str) -> Optional[Dict[str, str]]:
+        """Parse incoming agent-to-agent message in format:
+        FROM: sender\nTO: receiver\nMESSAGE: content
+        """
+        if not (text.startswith("FROM:") and "TO:" in text and "MESSAGE:" in text):
+            return None
         
-        user_text = msg.content.text
-        
-        # Check if this is an agent-to-agent message in our simple format
-        if user_text.startswith("FROM:") and "TO:" in user_text and "MESSAGE:" in user_text:
-            return self._handle_incoming_agent_message(user_text, msg, conversation_id)
-        
-        logger.info(f"📨 [{self.agent_id}] Received: {user_text}")
-        
-        # Handle different message types
         try:
-            if user_text.startswith("@"):
-                # Agent-to-agent message (outgoing)
-                return self._handle_agent_message(user_text, msg, conversation_id)
-            elif user_text.startswith("/"):
+            lines = text.strip().split('\n')
+            result = {}
+            
+            for line in lines:
+                if line.startswith("FROM:"):
+                    result['from_agent'] = line[5:].strip()
+                elif line.startswith("TO:"):
+                    result['to_agent'] = line[3:].strip()
+                elif line.startswith("MESSAGE:"):
+                    result['message'] = line[8:].strip()
+            
+            return result if all(k in result for k in ['from_agent', 'to_agent', 'message']) else None
+        except Exception as e:
+            logger.error(f"Error parsing agent message: {e}")
+            return None
+    
+    async def handle_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Main message handling entry point
+        
+        Called by protocol adapters when messages arrive.
+        """
+        content = message.get("content", {}).get("text", "")
+        conversation_id = message.get("conversation_id", "") or str(uuid.uuid4())
+        
+        # Check if this is an incoming agent-to-agent message
+        parsed = self.parse_incoming_agent_message(content)
+        if parsed:
+            return await self._handle_incoming_agent_message(parsed, conversation_id)
+        
+        logger.info(f"📨 [{self.agent_id}] Received: {content}")
+        
+        try:
+            # Check message type
+            if content.startswith("@"):
+                # Outgoing agent-to-agent message
+                return await self._handle_outgoing_agent_message(content, conversation_id)
+            elif content.startswith("/"):
                 # System command
-                return self._handle_command(user_text, msg, conversation_id)
+                return await self._handle_command(content, conversation_id)
             else:
                 # Regular message - use agent logic
                 if self.telemetry:
                     self.telemetry.log_message_received(self.agent_id, conversation_id)
                 
-                response = self.agent_logic(user_text, conversation_id)
-                return self._create_response(msg, conversation_id, response)
+                response = self.agent_logic(content, conversation_id)
+                return self._create_response(response)
                 
         except Exception as e:
-            return self._create_response(
-                msg, conversation_id, 
-                f"Error: {str(e)}"
-            )
+            logger.error(f"❌ [{self.agent_id}] Error handling message: {e}")
+            return self._create_response(f"Error: {str(e)}")
     
-    def _handle_incoming_agent_message(self, user_text: str, msg: Message, conversation_id: str) -> Message:
+    async def _handle_incoming_agent_message(self, parsed: Dict[str, str], 
+                                            conversation_id: str) -> Dict[str, Any]:
         """Handle incoming messages from other agents"""
-        try:
-            lines = user_text.strip().split('\n')
-            from_agent = ""
-            to_agent = ""
-            message_content = ""
-            
-            for line in lines:
-                if line.startswith("FROM:"):
-                    from_agent = line[5:].strip()
-                elif line.startswith("TO:"):
-                    to_agent = line[3:].strip()
-                elif line.startswith("MESSAGE:"):
-                    message_content = line[8:].strip()
-            
-            logger.info(f"📨 [{self.agent_id}] ← [{from_agent}]: {message_content}")
-            
-            # Check if this is a reply (don't respond to replies to avoid infinite loops)
-            if message_content.startswith("Response to "):
-                logger.info(f"🔄 [{self.agent_id}] Received reply from {from_agent}, displaying to user")
-                # Display the reply to user but don't respond back to avoid loops
-                return self._create_response(
-                    msg, conversation_id, 
-                    f"[{from_agent}] {message_content[len('Response to ' + self.agent_id + ': '):]}"
-                )
-            
-            # Process the message through our agent logic
-            if self.telemetry:
-                self.telemetry.log_message_received(self.agent_id, conversation_id)
-            
-            response = self.agent_logic(message_content, conversation_id)
-            
-            # Send response back
-            return self._create_response(
-                msg, conversation_id, 
-                f"Response to {from_agent}: {response}"
-            )
-            
-        except Exception as e:
-            logger.error(f"❌ [{self.agent_id}] Error processing incoming agent message: {e}")
-            return self._create_response(
-                msg, conversation_id,
-                f"Error processing message from agent: {str(e)}"
-            )
-
-    def _handle_agent_message(self, user_text: str, msg: Message, conversation_id: str) -> Message:
-        """Handle messages to other agents (@agent_id message)"""
-        parts = user_text.split(" ", 1)
-        if len(parts) <= 1:
-            return self._create_response(
-                msg, conversation_id,
-                "Invalid format. Use '@agent_id message'"
-            )
+        from_agent = parsed['from_agent']
+        message_content = parsed['message']
         
-        target_agent = parts[0][1:]  # Remove @
+        logger.info(f"📨 [{self.agent_id}] ← [{from_agent}]: {message_content}")
+        
+        # Check if this is a reply (avoid infinite loops)
+        if message_content.startswith("Response to "):
+            logger.info(f"🔄 [{self.agent_id}] Received reply from {from_agent}")
+            return self._create_response(f"[{from_agent}] {message_content[len(f'Response to {self.agent_id}: '):]}")
+        
+        # Process through agent logic
+        if self.telemetry:
+            self.telemetry.log_message_received(self.agent_id, conversation_id)
+        
+        response = self.agent_logic(message_content, conversation_id)
+        return self._create_response(f"Response to {from_agent}: {response}")
+    
+    async def _handle_outgoing_agent_message(self, content: str, 
+                                            conversation_id: str) -> Dict[str, Any]:
+        """Handle messages to other agents (@agent_id message)"""
+        parts = content.split(" ", 1)
+        if len(parts) <= 1:
+            return self._create_response("Invalid format. Use '@agent_id message'")
+        
+        target_agent_id = parts[0][1:]  # Remove @
         message_text = parts[1]
         
-        logger.info(f"🔄 [{self.agent_id}] Sending to {target_agent}: {message_text}")
+        logger.info(f"🔄 [{self.agent_id}] Sending to {target_agent_id}: {message_text}")
         
-        # Look up target agent and send message
-        result = self._send_to_agent(target_agent, message_text, conversation_id)
-        return self._create_response(msg, conversation_id, result)
+        # Route to target agent
+        result = await self.route_to_agent(target_agent_id, message_text, conversation_id)
+        return result
     
-    def _handle_command(self, user_text: str, msg: Message, conversation_id: str) -> Message:
+    async def _handle_command(self, content: str, conversation_id: str) -> Dict[str, Any]:
         """Handle system commands"""
-        parts = user_text.split(" ", 1)
+        parts = content.split(" ", 1)
         command = parts[0][1:] if len(parts) > 0 else ""
-        args = parts[1] if len(parts) > 1 else ""
         
         if command == "help":
             help_text = """Available commands:
@@ -147,106 +156,109 @@ class SimpleAgentBridge(A2AServer):
 /ping - Test agent responsiveness  
 /status - Show agent status
 @agent_id message - Send message to another agent"""
-            return self._create_response(msg, conversation_id, help_text)
+            return self._create_response(help_text)
         
         elif command == "ping":
-            return self._create_response(msg, conversation_id, "Pong!")
+            return self._create_response("Pong!")
         
         elif command == "status":
-            status = f"Agent: {self.agent_id}, Status: Running"
-            if self.registry_url:
-                status += f", Registry: {self.registry_url}"
-            return self._create_response(msg, conversation_id, status)
+            protocols = self.router.get_all_protocols()
+            status = f"Agent: {self.agent_id}, Status: Running, Protocols: {', '.join(protocols)}"
+            if hasattr(self.registry, 'registry_url') and self.registry.registry_url:
+                status += f", Registry: {self.registry.registry_url}"
+            return self._create_response(status)
         
         else:
             return self._create_response(
-                msg, conversation_id,
                 f"Unknown command: {command}. Use /help for available commands"
             )
     
-    def _send_to_agent(self, target_agent_id: str, message_text: str, conversation_id: str) -> str:
-        """Send message to another agent"""
+    async def route_to_agent(self, target_agent_id: str, message_text: str,
+                        conversation_id: str) -> Dict[str, Any]:
+        """Route message to target agent via appropriate protocol"""
         try:
-            # Look up agent URL
-            agent_url = self._lookup_agent(target_agent_id)
-            if not agent_url:
-                return f"Agent {target_agent_id} not found"
+            # Resolve agent via NANDA Index
+            agent_info = await self.registry.resolve(target_agent_id)
             
-            # Ensure URL has /a2a endpoint
-            if not agent_url.endswith('/a2a'):
-                agent_url = f"{agent_url}/a2a"
+            if not agent_info:
+                logger.warning(f"🔍 Agent {target_agent_id} not found in registry")
+                return self._create_response(f"Agent {target_agent_id} not found")
             
-            logger.info(f"📤 [{self.agent_id}] → [{target_agent_id}]: {message_text}")
+            # Debug: print what we got from registry
+            logger.info(f"📋 Agent info from registry: {agent_info}")
             
-            # Create simple message with metadata
+            # Select protocol
+            supported_protocols = agent_info.get("supported_protocols", ["a2a"])
+            protocol_name = self.router.select_protocol(supported_protocols)
+            
+            # Get target URL - try multiple fields
+            endpoints = agent_info.get("endpoints", {})
+            target_url = endpoints.get(protocol_name)
+            
+            if not target_url:
+                # Try different URL fields
+                target_url = (
+                    agent_info.get("url") or 
+                    agent_info.get("agent_url") or 
+                    agent_info.get("public_url")
+                )
+            
+            # Ensure target_url is valid
+            if not target_url:
+                logger.error(f"❌ No URL found for {target_agent_id}. Agent info: {agent_info}")
+                return self._create_response(f"No endpoint found for {target_agent_id}")
+            
+            # Add /a2a suffix if needed and not already present
+            if protocol_name == "a2a" and not target_url.endswith('/a2a'):
+                target_url = f"{target_url}/a2a"
+            
+            logger.info(f"📤 [{self.agent_id}] → [{target_agent_id}] via {protocol_name}: {message_text}")
+            logger.info(f"🔗 Target URL: {target_url}")
+            
+            # Create message in simple format
             simple_message = f"FROM: {self.agent_id}\nTO: {target_agent_id}\nMESSAGE: {message_text}"
             
-            # Send message using A2A client
-            client = A2AClient(agent_url, timeout=30)
-            response = client.send_message(
-                Message(
-                    role=MessageRole.USER,
-                    content=TextContent(text=simple_message),
-                    conversation_id=conversation_id,
-                    metadata=Metadata(custom_fields={
-                        'from_agent_id': self.agent_id,
-                        'to_agent_id': target_agent_id,
-                        'message_type': 'agent_to_agent'
-                    })
-                )
-            )
+            # Send via protocol
+            message = {
+                "content": {
+                    "text": simple_message,
+                    "type": "text"
+                },
+                "conversation_id": conversation_id,
+                "metadata": {
+                    "from_agent_id": self.agent_id,
+                    "to_agent_id": target_agent_id,
+                    "message_type": "agent_to_agent"
+                }
+            }
+            
+            response = await self.router.send(protocol_name, target_url, message)
             
             if self.telemetry:
                 self.telemetry.log_message_sent(target_agent_id, conversation_id)
             
-            # Extract the actual response content from the target agent
-            logger.info(f"🔍 [{self.agent_id}] Response type: {type(response)}, has parts: {hasattr(response, 'parts') if response else 'None'}")
-            if response:
-                if hasattr(response, 'parts') and response.parts:
-                    response_text = response.parts[0].text
-                    logger.info(f"✅ [{self.agent_id}] Received response from {target_agent_id}: {response_text[:100]}...")
-                    return f"[{target_agent_id}] {response_text}"
-                else:
-                    logger.info(f"✅ [{self.agent_id}] Response has no parts, full response: {str(response)[:200]}...")
-                    return f"[{target_agent_id}] {str(response)}"
-            else:
-                logger.info(f"✅ [{self.agent_id}] Message delivered to {target_agent_id}, no response")
-                return f"Message sent to {target_agent_id}: {message_text}"
+            # Extract response
+            response_text = response.get("content", {}).get("text", str(response))
+            logger.info(f"✅ [{self.agent_id}] Response from {target_agent_id}: {response_text[:100]}...")
+            
+            return self._create_response(f"[{target_agent_id}] {response_text}")
             
         except Exception as e:
-            return f"❌ Error sending to {target_agent_id}: {str(e)}"
+            logger.error(f"❌ Error routing to {target_agent_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._create_response(f"❌ Error sending to {target_agent_id}: {str(e)}")
     
-    def _lookup_agent(self, agent_id: str) -> Optional[str]:
-        """Look up agent URL in registry or use local discovery"""
-        
-        # Try registry lookup if available
-        if self.registry_url:
-            try:
-                response = requests.get(f"{self.registry_url}/lookup/{agent_id}", timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    agent_url = data.get("agent_url")
-                    logger.info(f"🌐 Found {agent_id} in registry: {agent_url}")
-                    return agent_url
-            except Exception as e:
-                logger.warning(f"🌐 Registry lookup failed: {e}")
-        
-        # Fallback to local discovery (for testing)
-        local_agents = {
-            "test_agent": "http://localhost:6000",
+    def _create_response(self, text: str) -> Dict[str, Any]:
+        """Create a standardized response dict"""
+        return {
+            "content": {
+                "text": f"[{self.agent_id}] {text}",
+                "type": "text"
+            }
         }
-        
-        if agent_id in local_agents:
-            logger.info(f"🏠 Found {agent_id} locally: {local_agents[agent_id]}")
-            return local_agents[agent_id]
-        
-        return None
     
-    def _create_response(self, original_msg: Message, conversation_id: str, text: str) -> Message:
-        """Create a response message"""
-        return Message(
-            role=MessageRole.AGENT,
-            content=TextContent(text=f"[{self.agent_id}] {text}"),
-            parent_message_id=original_msg.message_id,
-            conversation_id=conversation_id
-        )
+    async def run_server(self, host: str = "0.0.0.0", port: int = 8000):
+        """Start all protocol servers"""
+        logger.info(f"🚀 Starting agent bridge for {self.agent_id} on {host}:{port}")
+        await self.router.start_all_servers(host, port)

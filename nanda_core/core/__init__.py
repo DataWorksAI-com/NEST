@@ -4,9 +4,9 @@ Core components for the Streamlined NANDA Adapter
 """
 
 from .adapter import NANDA
-from .agent_bridge import SimpleAgentBridge
+from .agent_bridge import AgentBridge
 
 __all__ = [
     "NANDA",
-    "SimpleAgentBridge"
+    "AgentBridge"
 ]
