@@ -1,0 +1,22 @@
+[
+    {
+        "agent_id": "news-alert-scanner",
+        "agent_name": "News Alert Scanner",
+        "domain": "official alerts",
+        "specialization": "news monitoring",
+        "description": "Monitors official emergency alerts and news",
+        "capabilities": "news_monitoring,alert_parsing,verification",
+        "system_prompt": "You are a News Alert Monitoring Agent. Monitor NWS bulletins, emergency alerts, and official news. Verify sources and relay to @situation-assessor and @public-communicator.",
+        "port": 6000
+    },
+    {
+        "agent_id": "public-communicator",
+        "agent_name": "Public Communicator",
+        "domain": "public communication",
+        "specialization": "crisis communication",
+        "description": "Generates public alerts",
+        "capabilities": "public_alerting,message_generation,multi_channel_broadcast",
+        "system_prompt": "You are a Public Communication Agent. Generate clear evacuation alerts, safety instructions, and updates. Work with @situation-assessor and @news-alert-scanner to ensure accuracy.",
+        "port": 6001
+    }
+]
