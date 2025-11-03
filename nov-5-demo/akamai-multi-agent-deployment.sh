@@ -226,7 +226,7 @@ while IFS= read -r agent_config; do
     DOMAIN=\$(echo "\$agent_config" | jq -r '.domain')
     SPECIALIZATION=\$(echo "\$agent_config" | jq -r '.specialization')
     DESCRIPTION=\$(echo "\$agent_config" | jq -r '.description')
-    CAPABILITIES=\$(echo "\$agent_config" | jq -c '.capabilities')
+    CAPABILITIES=\$(echo "\$agent_config" | jq -r '.capabilities')
     PORT=\$(echo "\$agent_config" | jq -r '.port')
     SYSTEM_PROMPT=\$(echo "\$agent_config" | jq -r '.system_prompt // empty')
     
@@ -244,17 +244,17 @@ startretries=3
 stderr_logfile=/var/log/agent_\$AGENT_ID.err.log
 stdout_logfile=/var/log/agent_\$AGENT_ID.out.log
 environment=
-ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY",\
-AGENT_ID="\$AGENT_ID",\
-AGENT_NAME="\$AGENT_NAME",\
-AGENT_DOMAIN="\$DOMAIN",\
-AGENT_SPECIALIZATION="\$SPECIALIZATION",\
-AGENT_DESCRIPTION="\$DESCRIPTION",\
-AGENT_CAPABILITIES="\$CAPABILITIES",\
-REGISTRY_URL="$REGISTRY_URL",\
-PUBLIC_URL="http://\$PUBLIC_IP:\$PORT",\
-PORT="\$PORT",\
-SYSTEM_PROMPT="\$SYSTEM_PROMPT"
+    ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY",
+    AGENT_ID="\$AGENT_ID",
+    AGENT_NAME="\$AGENT_NAME",
+    AGENT_DOMAIN="\$DOMAIN",
+    AGENT_SPECIALIZATION="\$SPECIALIZATION",
+    AGENT_DESCRIPTION="\$DESCRIPTION",
+    AGENT_CAPABILITIES="\$CAPABILITIES",
+    REGISTRY_URL="$REGISTRY_URL",
+    PUBLIC_URL="http://\$PUBLIC_IP:\$PORT",
+    PORT="\$PORT",
+    SYSTEM_PROMPT="\$SYSTEM_PROMPT"
 
 SUPERVISOR_EOF
 
